@@ -1,0 +1,96 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Serverless File Organizer using S3, Lambda, and DynamoDB (Free Tier Optimized)
+
+Parameters:
+  CodeBucketName:
+    Type: String
+    Default: <YOUR-UNIQUE-CODE-BUCKET> # Must be globally unique!
+    Description: S3 Bucket to hold the Lambda deployment ZIP and source files.
+
+Resources:
+  # 1. S3 Bucket (Storage and Event Source - Always Free)
+  FileStorageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref CodeBucketName
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt FileOrganizerLambda.Arn # Connects S3 upload event to Lambda
+
+  # 2. DynamoDB Table (Tracking/Metadata - Always Free)
+  FileMetadataTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: "FileOrganizerMetadata"
+      AttributeDefinitions:
+        - AttributeName: FileKey
+          AttributeType: S
+      KeySchema:
+        - AttributeName: FileKey
+          KeyType: HASH
+      # CRITICAL: Use Pay-Per-Request to avoid exhausting Free Tier provisioned capacity
+      BillingMode: PAY_PER_REQUEST 
+
+  # 3. IAM Role (Lambda Permissions)
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3AndDynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                  - s3:GetObjectVersion
+                  - s3:CopyObject
+                Resource: !Sub 'arn:aws:s3:::${CodeBucketName}/*' # Full access to the S3 bucket
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt FileMetadataTable.Arn
+
+  # 4. AWS Lambda Function (The Python Code - Always Free)
+  FileOrganizerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: handler.lambda_handler
+      Runtime: python3.11 # Use a current, supported runtime
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 10 # Short timeout for efficiency
+      MemorySize: 128 # CRITICAL: Keep memory low for free tier optimization
+      Code:
+        S3Bucket: !Ref CodeBucketName
+        S3Key: lambda.zip # Assumes you upload the lambda.zip file manually or via CLI
+
+  # 5. Permission for S3 to invoke Lambda
+  S3InvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt FileOrganizerLambda.Arn
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !GetAtt FileStorageBucket.Arn
+
+Outputs:
+  OrganizerBucket:
+    Description: S3 Bucket to upload files for organization
+    Value: !Ref FileStorageBucket
