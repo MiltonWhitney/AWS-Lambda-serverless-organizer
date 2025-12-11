@@ -1,0 +1,53 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Simple EC2 Instance Deployment via CloudFormation
+
+# --- 1. Parameters (Inputs) ---
+Parameters:
+  InstanceType:
+    Description: WebServer EC2 instance type
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+      - t2.small
+  
+  LatestAMIId:
+    Description: AMI ID for the latest Amazon Linux 2 (HVM)
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+
+# --- 2. Resources (The actual AWS services) ---
+Resources:
+  WebServerSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Enable SSH access via port 22
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: WebServerSG
+
+  WebServerInstance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      ImageId: !Ref LatestAMIId 
+      InstanceType: !Ref InstanceType
+      SecurityGroups: 
+        - !Ref WebServerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: MyCFNWebServer
+      # KeyName: your-key-pair-name # Uncomment and replace for SSH access
+
+# --- 3. Outputs (Information after deployment) ---
+Outputs:
+  InstanceId:
+    Description: ID of the newly created EC2 instance
+    Value: !Ref WebServerInstance
+  PublicDNS:
+    Description: Public DNS name of the instance
+    Value: !GetAtt WebServerInstance.PublicDnsName

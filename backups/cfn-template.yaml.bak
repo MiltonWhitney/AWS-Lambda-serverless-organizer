@@ -1,30 +1,24 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Serverless File Organizer using existing or new S3 bucket + Lambda + DynamoDB
+Description: Serverless File Organizer using S3, Lambda, and DynamoDB (Free Tier Optimized)
 
 Parameters:
-  FileStorageBucketName:
+  CodeBucketName:
     Type: String
-    Description: Name of S3 bucket to use (existing OR to be created)
-
-Conditions:
-  CreateBucketCondition: !Equals [!Ref FileStorageBucketName, ""]
+    Default: miltons-file-organizer-bucket-12022025  # Must be globally unique!
+    Description: S3 Bucket to hold the Lambda deployment ZIP and source files.
 
 Resources:
-
-  # S3 bucket (only created if parameter left empty)
+  # 1. S3 Bucket (Storage and Event Source - Always Free)
   FileStorageBucket:
     Type: AWS::S3::Bucket
-    Condition: CreateBucketCondition
     Properties:
-      BucketName: !Ref FileStorageBucketName
+      BucketName: !Ref CodeBucketName
       NotificationConfiguration:
         LambdaConfigurations:
           - Event: s3:ObjectCreated:*
-            Function: !GetAtt FileOrganizerLambda.Arn
+            Function: !GetAtt FileOrganizerLambda.Arn # Connects S3 upload event to Lambda
 
-  ###########################################
-  # DynamoDB Table
-  ###########################################
+  # 2. DynamoDB Table (Tracking/Metadata - Always Free)
   FileMetadataTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -35,11 +29,10 @@ Resources:
       KeySchema:
         - AttributeName: FileKey
           KeyType: HASH
-      BillingMode: PAY_PER_REQUEST
+      # CRITICAL: Use Pay-Per-Request to avoid exhausting Free Tier provisioned capacity
+      BillingMode: PAY_PER_REQUEST 
 
-  ###########################################
-  # IAM Role for Lambda
-  ###########################################
+  # 3. IAM Role (Lambda Permissions)
   LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -47,8 +40,7 @@ Resources:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
+            Principal: { Service: lambda.amazonaws.com }
             Action: sts:AssumeRole
       Policies:
         - PolicyName: S3AndDynamoDBAccess
@@ -60,47 +52,45 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: "arn:aws:logs:*:*:*"
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*'
               - Effect: Allow
                 Action:
                   - s3:GetObject
                   - s3:PutObject
                   - s3:DeleteObject
                   - s3:ListBucket
-                Resource:
-                  - !Sub "arn:aws:s3:::${FileStorageBucketName}"
-                  - !Sub "arn:aws:s3:::${FileStorageBucketName}/*"
+                  - s3:GetObjectVersion
+                  - s3:CopyObject
+                Resource: !Sub 'arn:aws:s3:::${CodeBucketName}/*' # Full access to the S3 bucket
               - Effect: Allow
                 Action:
                   - dynamodb:PutItem
-                Resource: "*"
+                Resource: !GetAtt FileMetadataTable.Arn
 
-  ###########################################
-  # Lambda Function
-  ###########################################
+  # 4. AWS Lambda Function (The Python Code - Always Free)
   FileOrganizerLambda:
     Type: AWS::Lambda::Function
     Properties:
       Handler: handler.lambda_handler
-      Runtime: python3.11
+      Runtime: python3.11 # Use a current, supported runtime
       Role: !GetAtt LambdaExecutionRole.Arn
-      Timeout: 10
-      MemorySize: 128
+      Timeout: 10 # Short timeout for efficiency
+      MemorySize: 128 # CRITICAL: Keep memory low for free tier optimization
       Code:
-        S3Bucket: !Ref FileStorageBucketName
-        S3Key: lambda.zip
+        S3Bucket: !Ref CodeBucketName
+        S3Key: lambda.zip # Assumes you upload the lambda.zip file manually or via CLI
 
-  ###########################################
-  # Lambda Permission (S3 -> Lambda)
-  ###########################################
+  # 5. Permission for S3 to invoke Lambda
   S3InvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
       Action: lambda:InvokeFunction
       FunctionName: !GetAtt FileOrganizerLambda.Arn
       Principal: s3.amazonaws.com
-      SourceArn: !Sub "arn:aws:s3:::${FileStorageBucketName}"
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !GetAtt FileStorageBucket.Arn
 
 Outputs:
   OrganizerBucket:
-    Value: !Ref FileStorageBucketName
+    Description: S3 Bucket to upload files for organization
+    Value: !Ref FileStorageBucket
